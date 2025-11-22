@@ -1,0 +1,35 @@
+body {
+  font-family: Arial;
+  margin: 0;
+  padding: 0;
+  background: #f0f0f0;
+}
+
+.container {
+  text-align: center;
+  padding: 20px;
+}
+
+video {
+  width: 100%;
+  max-width: 450px;
+  border-radius: 12px;
+  background: #000;
+}
+
+#statusBox {
+  margin-top: 15px;
+  padding: 10px;
+  font-size: 18px;
+  background: #ffffff;
+  border-radius: 10px;
+  display: inline-block;
+  min-width: 200px;
+  border: 1px solid #ccc;
+}
+
+#lastScan {
+  font-size: 20px;
+  color: #1256A6;
+  word-break: break-all;
+}

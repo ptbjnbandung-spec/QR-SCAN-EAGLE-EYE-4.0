@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Scan QR</title>
+
+  <link rel="stylesheet" href="style.css">
+
+  <script src="qrcode.js"></script>
+  <script src="script.js" defer></script>
+</head>
+
+<body>
+  <div class="container">
+    <h2>QR SCANNER 4.0</h2>
+
+    <video id="preview" playsinline></video>
+
+    <div id="statusBox">
+      <span id="statusText">Ready</span>
+    </div>
+
+    <div class="log">
+      <p><strong>Last Scan:</strong></p>
+      <p id="lastScan">-</p>
+    </div>
+  </div>
+</body>
+</html>
