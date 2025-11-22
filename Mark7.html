@@ -1,0 +1,451 @@
+<!-- QR Scanner 4.0 - Complete prototype
+     This single HTML file contains:
+     - Frontend UI + Camera scanner (html5-qrcode)
+     - Queue (localStorage) with auto-flush to Google Apps Script Web App
+     - Manual input fallback
+     - Status indicators (Idle, Scanning, Sending, Error)
+     - Anti-Fake simple scheme (server-side signature verification explained)
+     - Styling inspired by provided screenshot
+     - Instructions and Apps Script (Code.gs) to paste into Google Apps Script
+
+  HOW TO USE
+  1. Copy the Apps Script section (Code.gs) into a new Apps Script project attached to your spreadsheet.
+  2. Create two files in Apps Script: Code.gs (paste the Code.gs content) and scanner.html (paste the content of the <body>... part under the "CLIENT HTML" comment).
+  3. Deploy as Web App: "Execute as: Me", "Who has access: Anyone with Google account". Use the Web App URL in the FRONTEND_WEBAPP_URL variable below.
+  4. Open the scanner via the Web App URL (this allows google.script.run). If you prefer to run locally/file://, the script will fallback to POST requests to the Web App URL.
+
+-->
+
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>QR SCAN 4.0 — Prototype</title>
+
+  <!-- simple pastel theme inspired by screenshot -->
+  <style>
+    :root{
+      --bg:#f6f9fb; --card:#ffffff; --accent:#2aa4ab; --accent-2:#86e7c1; --danger:#ff7b7b; --muted:#9aa4ad;
+    }
+    html,body{height:100%;margin:0;font-family:Inter,Segoe UI,Arial,system-ui;background:var(--bg)}
+    .wrap{max-width:1200px;margin:18px auto;padding:20px}
+    header{display:flex;align-items:center;gap:16px}
+    header img{height:48px;border-radius:8px}
+    h1{margin:0;font-size:20px}
+    .grid{display:grid;grid-template-columns:480px 1fr;gap:18px;margin-top:18px}
+
+    .card{background:var(--card);border-radius:12px;padding:18px;box-shadow:0 6px 18px rgba(20,30,40,0.06)}
+    #camera{width:100%;height:320px;background:#000;border-radius:8px;display:flex;align-items:center;justify-content:center;color:#fff}
+
+    .controls{margin-top:12px;display:flex;gap:10px;flex-wrap:wrap}
+    .btn{padding:10px 14px;border-radius:10px;border:0;cursor:pointer;font-weight:600}
+    .btn-primary{background:var(--accent);color:#fff}
+    .btn-danger{background:var(--danger);color:#fff}
+    .btn-ghost{background:transparent;border:1px solid #e6eef0;color:var(--muted)}
+
+    .status{margin-top:12px;padding:14px;border-radius:10px;background:linear-gradient(90deg,#eafaf1,#f0fff7);color:#166b3e;font-weight:700;text-align:center}
+
+    .right-col{display:flex;flex-direction:column;gap:12px}
+    .small{font-size:13px;color:var(--muted)}
+
+    .log{max-height:300px;overflow:auto;padding:10px;border-radius:10px;background:#fbfdff;border:1px solid #e9f4f6}
+    .log-item{padding:8px;border-bottom:1px dashed #eef6f7;font-size:13px}
+
+    .form-row{display:flex;gap:8px;align-items:center}
+    input[type=text], input[type=number]{padding:8px;border-radius:8px;border:1px solid #e6eef0;flex:1}
+
+    .queue-indicator{display:flex;align-items:center;gap:8px}
+    .pill{padding:6px 10px;border-radius:999px;background:#f0f6f6;color:#0b4b4b;font-weight:600}
+
+    footer{margin-top:16px;font-size:13px;color:var(--muted)}
+  </style>
+
+  <!-- html5-qrcode for camera decoding -->
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/minified/html5-qrcode.min.js"></script>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <!-- local screenshot/logo included from uploaded file path -->
+      <img src="/mnt/data/Screenshot (467).png" alt="logo" onerror="this.style.display='none'">
+      <div>
+        <h1>QR SCAN EAGLE EYE — PT. BJN BANDUNG</h1>
+        <div class="small">Prototype: MARK 7 Update</div>
+      </div>
+    </header>
+
+    <div class="grid">
+      <!-- left: Camera + controls -->
+      <div class="card">
+        <h3>Camera</h3>
+        <div id="camera">Kamera belum aktif</div>
+
+        <div class="controls">
+          <button id="startBtn" class="btn btn-primary">Start Scan</button>
+          <button id="stopBtn" class="btn btn-ghost">Stop Scan</button>
+          <button id="manualBtn" class="btn">Manual Input</button>
+          <button id="exportBtn" class="btn">Export Log</button>
+          <label class="queue-indicator"><span class="pill" id="queueCount">Queue: 0</span></label>
+        </div>
+
+        <div id="statusBox" class="status">Status: Idle</div>
+
+        <div style="margin-top:10px">
+          <label class="small">Ultra Speed (auto-scan)</label>
+          <input type="checkbox" id="ultraSpeed">
+        </div>
+
+        <div style="margin-top:12px">
+          <div class="small">Manual input (fallback):</div>
+          <div class="form-row" style="margin-top:6px">
+            <input id="manualProduct" type="text" placeholder="ProductID or QR text">
+            <input id="manualQty" type="number" placeholder="Qty" value="1" min="1" style="width:90px">
+            <button id="manualSubmit" class="btn btn-primary">Add</button>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- right: Last scan, log, controls -->
+      <div class="right-col">
+        <div class="card">
+          <h3>Last Scan</h3>
+          <div id="lastScan" class="status" style="background:linear-gradient(90deg,#e8fff6,#e7fff2);color:#0b6b4b">Belum ada</div>
+
+          <div style="margin-top:10px" class="small">Actions</div>
+          <div style="margin-top:8px;display:flex;gap:8px">
+            <button id="clearQueue" class="btn btn-ghost">Clear Local Queue</button>
+            <button id="flushQueue" class="btn btn-primary">Flush Queue Now</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Scan Log (local & server)</h3>
+          <div class="log" id="logList"><div class="log-item">Tidak ada aktivitas</div></div>
+        </div>
+
+        <div class="card">
+          <h3>Product Info / Anti-Fake</h3>
+          <div id="prodInfo" style="min-height:120px">
+            <div class="small">Produk belum dipilih.</div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <footer>
+      NOTE: Untuk menghubungkan ke Google Sheet, isi variabel FRONTEND_WEBAPP_URL di script JavaScript bagian bawah dengan URL Web App Apps Script Anda.
+    </footer>
+  </div>
+
+
+  <!-- CLIENT JavaScript: scanner, queue, UI logic, sync to Google Apps Script -->
+  <script>
+    // CONFIG
+    const FRONTEND_WEBAPP_URL = 'https://script.google.com/macros/s/AKfycbxiPihfW2MDfm01oHu_tNi9x-Iq52GtZTd4wSEtUqRaKREDnI2aHtTJa_VXl34dp2U/exec'; // <- Paste your Apps Script Web App URL here (if using direct POST fallback)
+    const FLUSH_INTERVAL = 5000; // try flush every 5s if online
+
+    // UI elements
+    const cameraDiv = document.getElementById('camera');
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const manualBtn = document.getElementById('manualBtn');
+    const manualSubmit = document.getElementById('manualSubmit');
+    const manualProduct = document.getElementById('manualProduct');
+    const manualQty = document.getElementById('manualQty');
+    const statusBox = document.getElementById('statusBox');
+    const lastScan = document.getElementById('lastScan');
+    const logList = document.getElementById('logList');
+    const queueCount = document.getElementById('queueCount');
+    const prodInfo = document.getElementById('prodInfo');
+    const exportBtn = document.getElementById('exportBtn');
+    const flushQueueBtn = document.getElementById('flushQueue');
+    const clearQueueBtn = document.getElementById('clearQueue');
+    const ultraSpeed = document.getElementById('ultraSpeed');
+
+    // Local queue stored in localStorage
+    const QUEUE_KEY = 'qr4_queue_v1';
+    function loadQueue(){
+      try{ const s = localStorage.getItem(QUEUE_KEY); return s?JSON.parse(s):[] }catch(e){return[]} }
+    function saveQueue(q){ localStorage.setItem(QUEUE_KEY, JSON.stringify(q)); updateQueueIndicator(); }
+    function updateQueueIndicator(){ const q=loadQueue(); queueCount.textContent = `Queue: ${q.length}` }
+
+    // Local log
+    function addLocalLog(text){ const el = document.createElement('div'); el.className='log-item'; el.innerText = `${new Date().toLocaleString()} — ${text}`; logList.prepend(el); }
+
+    // Status helper
+    function setStatus(txt, color){ statusBox.innerText = `Status: ${txt}`; }
+
+    // Start/Stop camera with html5-qrcode
+    let html5QrcodeScanner = null; let currentCameraId = null; let scanning = false;
+    async function startCamera(){
+      if(scanning) return;
+      setStatus('Meminta izin kamera...');
+      try{
+        const devices = await Html5Qrcode.getCameras();
+        if(!devices || devices.length==0){ setStatus('Tidak ada kamera yang terdeteksi'); return }
+        currentCameraId = devices[0].id;
+        html5QrcodeScanner = new Html5Qrcode('camera');
+        await html5QrcodeScanner.start(currentCameraId, { fps: 10, qrbox: {width:320,height:320} }, qrCodeSuccessCallback, qrCodeErrorCallback);
+        scanning = true; setStatus('Scanning');
+      }catch(err){ console.error(err); setStatus('Error: ' + err.message); }
+    }
+    function stopCamera(){ if(html5QrcodeScanner && scanning){ html5QrcodeScanner.stop().then(()=>{setStatus('Idle'); scanning=false; cameraDiv.innerHTML='Kamera dihentikan';}).catch(e=>console.error(e)); } }
+
+    function qrCodeSuccessCallback(decodedText, decodedResult){
+      // If ultraSpeed is false, add small throttle to avoid duplicate reads
+      if(!ultraSpeed.checked){
+        if(lastScan._lastTime && Date.now()-lastScan._lastTime < 600) return; // 600ms debounce
+        lastScan._lastTime = Date.now();
+      }
+      handleScanned(decodedText);
+    }
+    function qrCodeErrorCallback(err){ /* optional: console.debug(err) */ }
+
+    // Handle scanned data
+    function handleScanned(scannedText){
+      lastScan.innerText = scannedText;
+      setStatus('Scanned: ' + scannedText);
+
+      // Add to queue object
+      const item = { ts: new Date().toISOString(), id: scannedText, qty: 1, user: 'scanner_device_1' };
+      const q = loadQueue(); q.push(item); saveQueue(q); addLocalLog('Queued: ' + scannedText);
+
+      // Attempt optimistic display by fetching product info immediately
+      fetchProductInfo(scannedText).then(info=>{
+        if(info){ renderProductInfo(info) } else { prodInfo.innerHTML = '<div class="small">Produk tidak ditemukan</div>'; }
+      }).catch(e=>{ console.warn(e); });
+    }
+
+    // Manual input
+    manualSubmit.addEventListener('click', ()=>{
+      const id = manualProduct.value.trim(); const qty = parseInt(manualQty.value) || 1;
+      if(!id) return alert('Isi ProductID');
+      const item = { ts:new Date().toISOString(), id:id, qty:qty, user:'manual' };
+      const q = loadQueue(); q.push(item); saveQueue(q); addLocalLog('Manual queued: ' + id + ' ×' + qty);
+      manualProduct.value=''; manualQty.value=1;
+    });
+
+    // Queue operations
+    clearQueueBtn.addEventListener('click', ()=>{ if(confirm('Clear local queue?')){ localStorage.removeItem(QUEUE_KEY); saveQueue([]); addLocalLog('Local queue cleared'); }});
+    flushQueueBtn.addEventListener('click', ()=>{ flushQueueImmediately(); });
+
+    // Export log (download text)
+    exportBtn.addEventListener('click', ()=>{
+      const lines = Array.from(document.querySelectorAll('.log-item')).map(n => n.innerText).join('
+');
+      const blob = new Blob([lines], {type:'text/plain'});
+      const url = URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download='scan-log.txt'; document.body.appendChild(a); a.click(); a.remove();
+    });
+
+    // Start/Stop buttons
+    startBtn.addEventListener('click', ()=>startCamera());
+    stopBtn.addEventListener('click', ()=>stopCamera());
+
+    // Periodic flush attempt
+    let flushTimer = setInterval(()=>{ autoFlushIfOnline(); }, FLUSH_INTERVAL);
+
+    async function autoFlushIfOnline(){
+      // Only flush if online & have queue
+      const q = loadQueue(); if(!q.length) return;
+      if(navigator.onLine) await flushQueue();
+    }
+
+    // Flush queue immediately called by user
+    async function flushQueueImmediately(){
+      const q = loadQueue(); if(!q.length){ addLocalLog('Queue kosong'); return; }
+      await flushQueue();
+    }
+
+    // Flush: send queue items to server (Apps Script). The preferred method is google.script.run (when served via Apps Script), otherwise POST to Web App URL
+    async function flushQueue(){
+      const q = loadQueue(); if(!q.length) return;
+      setStatus('Sending ' + q.length + ' items...');
+
+      // If inside Apps Script HTML sandbox, google.script.run is available
+      if(window.google && google.script && typeof google.script.run !== 'undefined'){
+        // call server function processQueue
+        try{
+          await new Promise((resolve, reject)=>{
+            google.script.run.withSuccessHandler(function(res){ addLocalLog('Server: ' + res); resolve(res); }).withFailureHandler(function(err){ addLocalLog('Server error: ' + JSON.stringify(err)); reject(err); }).processQueue(q);
+          });
+          // If success, clear queue
+          localStorage.removeItem(QUEUE_KEY); saveQueue([]); setStatus('Idle'); addLocalLog('Queue flushed to server');
+        }catch(e){ setStatus('Error sending to server'); console.error(e); }
+        return;
+      }
+
+      // Fallback: normal POST to Web App URL (need to set FRONTEND_WEBAPP_URL)
+      if(!FRONTEND_WEBAPP_URL){ setStatus('No WebApp URL configured'); addLocalLog('Flush failed: no WebApp URL'); return; }
+      try{
+        const resp = await fetch(FRONTEND_WEBAPP_URL + '/exec', { // some deployments may use /exec or root
+          method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({action:'processQueue', queue:q})
+        });
+        const data = await resp.json();
+        if(data && data.ok){ localStorage.removeItem(QUEUE_KEY); saveQueue([]); addLocalLog('Flushed to WebApp'); setStatus('Idle'); }
+        else { addLocalLog('WebApp response: ' + JSON.stringify(data)); setStatus('Error flush'); }
+      }catch(e){ addLocalLog('Flush network error: ' + e.message); setStatus('Error flush'); }
+    }
+
+    // Fetch product info helper (preferred via google.script.run, fallback to POST)
+    function fetchProductInfo(productId){
+      return new Promise((resolve,reject)=>{
+        if(window.google && google.script && typeof google.script.run !== 'undefined'){
+          google.script.run.withSuccessHandler(function(info){ resolve(info); }).withFailureHandler(function(err){ reject(err); }).getProductInfo(productId);
+        } else {
+          if(!FRONTEND_WEBAPP_URL) return resolve(null);
+          fetch(FRONTEND_WEBAPP_URL + '/exec', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'getProduct', productId:productId})})
+          .then(r=>r.json()).then(d=>resolve(d)).catch(e=>reject(e));
+        }
+      });
+    }
+
+    function renderProductInfo(info){
+      // info expected {name,desc,stock,auth} where auth = {valid:true/false, reason}
+      if(!info) { prodInfo.innerHTML = '<div class="small">Tidak ada info</div>'; return; }
+      prodInfo.innerHTML = `
+        <div style="font-weight:700">${info.name || '—'}</div>
+        <div class="small">${info.desc || ''}</div>
+        <div style="margin-top:8px">Stok: <strong>${info.stock}</strong></div>
+        <div style="margin-top:8px">Keaslian: <strong>${info.auth && info.auth.valid? 'Terverifikasi' : 'Tidak terverifikasi'}</strong></div>
+        <div class="small" style="margin-top:6px">${info.auth && info.auth.reason?info.auth.reason:''}</div>
+      `;
+    }
+
+    // Init
+    updateQueueIndicator();
+
+    // For demo: expose helper to add sample product (not used in client side)
+    window._debug = { loadQueue, saveQueue };
+
+    // Auto attempt to flush on page focus (helps when returning online)
+    window.addEventListener('focus', ()=>{ autoFlushIfOnline(); updateQueueIndicator(); });
+
+  </script>
+
+
+  <!-- APPS SCRIPT: Paste the following Code.gs into your Google Apps Script project attached to the Google Sheet -->
+  <!--
+    ====== Code.gs (Apps Script) ======
+    // Paste into Apps Script (bound to Spreadsheet)
+
+    const SECRET_SALT_PROPERTY = 'QR4_SECRET_SALT'; // store via PropertiesService
+
+    function doGet(e){
+      return HtmlService.createHtmlOutputFromFile('scanner').setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+    }
+
+    // ====== Server functions callable from client (google.script.run) ======
+    function getProductInfo(productId){
+      const ss = SpreadsheetApp.getActiveSpreadsheet();
+      const prodSheet = ss.getSheetByName('Products');
+      if(!prodSheet) return null;
+      const data = prodSheet.getDataRange().getValues();
+      for(let i=1;i<data.length;i++){
+        if(String(data[i][0]) == String(productId)){
+          // columns: 0=ProductID,1=Name,2=Stock,3=Desc,4=Signature(optional)
+          const name = data[i][1]; const stock = data[i][2]; const desc = data[i][3]; const sig = data[i][4]||'';
+          const auth = verifySignature(productId, sig);
+          return {name:name, stock:stock, desc:desc, auth:auth};
+        }
+      }
+      return null;
+    }
+
+    // Process queue array from client. Each item: {ts,id,qty,user}
+    function processQueue(queue){
+      const ss = SpreadsheetApp.getActiveSpreadsheet();
+      const logSheet = ss.getSheetByName('ScanLog');
+      const prodSheet = ss.getSheetByName('Products');
+      const pdata = prodSheet.getDataRange().getValues();
+
+      queue.forEach(item => {
+        try{
+          // append to scan log
+          logSheet.appendRow([new Date(item.ts), item.id, item.user || 'unknown', item.qty || 1]);
+
+          // update product stock if exists
+          for(let i=1;i<pdata.length;i++){
+            if(String(pdata[i][0]) == String(item.id)){
+              const current = Number(pdata[i][2]) || 0;
+              const newStock = Math.max(0, current - Number(item.qty || 1));
+              prodSheet.getRange(i+1, 3).setValue(newStock);
+              break;
+            }
+          }
+        }catch(e){
+          // continue on error
+          Logger.log('processQueue error: ' + e);
+        }
+      });
+      return 'OK';
+    }
+
+    // ====== Simple signature scheme for Anti-Fake (server side)
+    // We store a secret salt in script properties (set this once manually)
+    function setSecretSalt(value){
+      PropertiesService.getScriptProperties().setProperty(SECRET_SALT_PROPERTY, value);
+      return 'saved';
+    }
+    function getSecretSalt(){
+      return PropertiesService.getScriptProperties().getProperty(SECRET_SALT_PROPERTY) || '';
+    }
+
+    // Generate signature for a product (owner tool)
+    function generateSignature(productId){
+      const salt = getSecretSalt();
+      if(!salt) return ''; // must set salt first
+      const raw = String(productId) + '|' + salt;
+      const signature = Utilities.base64Encode(Utilities.computeHmacSha256Signature(raw, salt));
+      return signature;
+    }
+
+    // Verify signature: compare stored signature with recomputed
+    function verifySignature(productId, signature){
+      if(!signature) return {valid: false, reason: 'No signature'};
+      const salt = getSecretSalt(); if(!salt) return {valid:false, reason:'No server salt configured'};
+      const raw = String(productId) + '|' + salt;
+      const computed = Utilities.base64Encode(Utilities.computeHmacSha256Signature(raw, salt));
+      if(computed == signature) return {valid:true, reason:'Signature valid'};
+      return {valid:false, reason:'Signature mismatch'};
+    }
+
+    // Optional: Admin function to bulk-generate signatures for Products sheet
+    function applySignaturesToSheet(){
+      const ss = SpreadsheetApp.getActiveSpreadsheet(); const prodSheet = ss.getSheetByName('Products');
+      const data = prodSheet.getDataRange().getValues();
+      const salt = getSecretSalt(); if(!salt) throw('No secret salt set');
+      for(let i=1;i<data.length;i++){
+        const pid = String(data[i][0]);
+        const sig = generateSignature(pid);
+        prodSheet.getRange(i+1,5).setValue(sig);
+      }
+      return 'signatures applied';
+    }
+
+    // REST-style POST handler for fallback POST mode (if you choose to use FRONTEND_WEBAPP_URL fallback)
+    function doPost(e){
+      try{
+        const body = e.postData.contents ? JSON.parse(e.postData.contents) : {};
+        if(body.action == 'processQueue'){
+          const q = body.queue || [];
+          processQueue(q);
+          return ContentService.createTextOutput(JSON.stringify({ok:true})).setMimeType(ContentService.MimeType.JSON);
+        }
+        if(body.action == 'getProduct'){
+          const info = getProductInfo(body.productId||'');
+          return ContentService.createTextOutput(JSON.stringify(info||{})).setMimeType(ContentService.MimeType.JSON);
+        }
+        return ContentService.createTextOutput(JSON.stringify({ok:false, msg:'unknown action'})).setMimeType(ContentService.MimeType.JSON);
+      }catch(err){
+        return ContentService.createTextOutput(JSON.stringify({ok:false,error:err.toString()})).setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+
+    ====== End Apps Script ======
+  -->
+
+</body>
+</html>
